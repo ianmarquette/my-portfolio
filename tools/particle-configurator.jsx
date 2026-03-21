@@ -1,0 +1,784 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+function hexToRgb(hex) {
+  const h = hex.replace("#", "");
+  return { r: parseInt(h.slice(0,2),16), g: parseInt(h.slice(2,4),16), b: parseInt(h.slice(4,6),16) };
+}
+function hexToRgba(hex, alpha) {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// ─── Default Config ─────────────────────────────────────────────────────────
+export const DEFAULT_CONFIG = {
+  count: 80,
+  minSize: 1.5,
+  maxSize: 4,
+  randomizeSize: true,
+  opacity: 0.8,
+  shape: "circle",
+  palette: ["#818cf8", "#60a5fa", "#a78bfa"],
+  colorWeights: [1, 1, 1],
+  colorMode: "random",   // "random" | "cycle" | "weighted"
+  backgroundColor: "#0f172a",
+  lineColor: "#818cf8",
+  speed: 0.8,
+  direction: "random",
+  bounce: true,
+  pulse: false,
+  pulseSpeed: 0.03,
+  pulseAmount: 0.35,
+  connectionsEnabled: true,
+  maxDistance: 130,
+  lineOpacity: 0.25,
+  lineWidth: 1,
+  mouseInteraction: "repel",
+  mouseRadius: 120,
+  mouseForce: 0.6,
+  glowEnabled: false,
+  glowBlur: 8,
+  glowIntensity: 0.6,
+};
+
+// ─── Particle Class ──────────────────────────────────────────────────────────
+class Particle {
+  constructor(canvas, config, index = 0) {
+    this.canvas = canvas;
+    this.init(config, index);
+  }
+
+  init(config, index = 0) {
+    this.x = Math.random() * this.canvas.width;
+    this.y = Math.random() * this.canvas.height;
+    const t = config.randomizeSize ? Math.random() : 0.5;
+    this.baseSize = config.minSize + t * (config.maxSize - config.minSize);
+    this.size = this.baseSize;
+    this.pulsePhase = Math.random() * Math.PI * 2;
+    this.resetVelocity(config);
+    this.assignColor(config, index);
+  }
+
+  assignColor(config, index = 0) {
+    const pal = config.palette;
+    if (!pal || pal.length === 0) { this.color = "#818cf8"; return; }
+    if (pal.length === 1) { this.color = pal[0]; return; }
+    const k = pal.length;
+    let idx;
+    switch (config.colorMode) {
+      case "cycle":
+        idx = index % k;
+        break;
+      case "weighted": {
+        const weights = (config.colorWeights && config.colorWeights.length === k)
+          ? config.colorWeights : pal.map(() => 1);
+        const total = weights.reduce((a, b) => a + b, 0);
+        let r = Math.random() * total;
+        idx = k - 1;
+        for (let i = 0; i < weights.length; i++) { r -= weights[i]; if (r <= 0) { idx = i; break; } }
+        break;
+      }
+      default:
+        idx = Math.floor(Math.random() * k);
+    }
+    this.color = pal[idx];
+  }
+
+  resetVelocity(config) {
+    let angle;
+    const v = 0.7;
+    switch (config.direction) {
+      case "up":    angle = -Math.PI / 2 + (Math.random() - 0.5) * v; break;
+      case "down":  angle =  Math.PI / 2 + (Math.random() - 0.5) * v; break;
+      case "left":  angle =  Math.PI     + (Math.random() - 0.5) * v; break;
+      case "right": angle =               (Math.random() - 0.5) * v;  break;
+      default:      angle = Math.random() * Math.PI * 2;
+    }
+    const spd = config.speed * (0.5 + Math.random() * 0.5);
+    this.vx = Math.cos(angle) * spd;
+    this.vy = Math.sin(angle) * spd;
+  }
+
+  update(config, mouse) {
+    const { mouseInteraction, mouseRadius, mouseForce, speed } = config;
+    if (mouseInteraction !== "none") {
+      const dx = this.x - mouse.x, dy = this.y - mouse.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < mouseRadius && dist > 0) {
+        const force = ((mouseRadius - dist) / mouseRadius) * mouseForce;
+        const dir = mouseInteraction === "repel" ? 1 : -1;
+        this.vx += (dx / dist) * force * dir;
+        this.vy += (dy / dist) * force * dir;
+      }
+    }
+    const spd = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+    const max = speed * 4, min = speed * 0.25;
+    if (spd > max) { this.vx = this.vx/spd*max; this.vy = this.vy/spd*max; }
+    else if (spd < min && spd > 0) { this.vx = this.vx/spd*min; this.vy = this.vy/spd*min; }
+    this.x += this.vx; this.y += this.vy;
+    if (config.pulse) {
+      this.pulsePhase += config.pulseSpeed;
+      this.size = this.baseSize * (1 + Math.sin(this.pulsePhase) * config.pulseAmount);
+    } else { this.size = this.baseSize; }
+    if (config.bounce) {
+      const s = this.size;
+      if (this.x <= s) { this.x = s; this.vx = Math.abs(this.vx); }
+      if (this.x >= this.canvas.width - s) { this.x = this.canvas.width - s; this.vx = -Math.abs(this.vx); }
+      if (this.y <= s) { this.y = s; this.vy = Math.abs(this.vy); }
+      if (this.y >= this.canvas.height - s) { this.y = this.canvas.height - s; this.vy = -Math.abs(this.vy); }
+    } else {
+      const m = 20;
+      if (this.x < -m) this.x = this.canvas.width + m;
+      if (this.x > this.canvas.width + m) this.x = -m;
+      if (this.y < -m) this.y = this.canvas.height + m;
+      if (this.y > this.canvas.height + m) this.y = -m;
+    }
+  }
+
+  draw(ctx, config) {
+    ctx.save();
+    if (config.glowEnabled) {
+      ctx.shadowColor = this.color;
+      ctx.shadowBlur  = config.glowBlur;
+      ctx.globalAlpha = config.glowIntensity;
+    }
+    ctx.fillStyle = hexToRgba(this.color, config.opacity);
+    ctx.beginPath();
+    if (config.shape === "crescent") {
+      ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2, false);
+      ctx.arc(this.x + this.size * 0.45, this.y, this.size * 0.82, 0, Math.PI * 2, false);
+      ctx.fill("evenodd");
+    } else {
+      switch (config.shape) {
+        case "square":
+          ctx.rect(this.x - this.size, this.y - this.size, this.size * 2, this.size * 2); break;
+        case "egg":
+          ctx.ellipse(this.x, this.y, this.size * 0.7, this.size, 0, 0, Math.PI * 2); break;
+        case "diamond":
+          ctx.moveTo(this.x, this.y - this.size * 1.3); ctx.lineTo(this.x + this.size, this.y);
+          ctx.lineTo(this.x, this.y + this.size * 1.3); ctx.lineTo(this.x - this.size, this.y);
+          ctx.closePath(); break;
+        case "triangle":
+          ctx.moveTo(this.x, this.y - this.size * 1.2);
+          ctx.lineTo(this.x + this.size, this.y + this.size * 0.8);
+          ctx.lineTo(this.x - this.size, this.y + this.size * 0.8);
+          ctx.closePath(); break;
+        case "star":
+          for (let i = 0; i < 5; i++) {
+            const outerA = (i * 4 * Math.PI) / 5 - Math.PI / 2;
+            const innerA = outerA + (2 * Math.PI) / 10;
+            if (i === 0) ctx.moveTo(this.x + Math.cos(outerA) * this.size, this.y + Math.sin(outerA) * this.size);
+            else         ctx.lineTo(this.x + Math.cos(outerA) * this.size, this.y + Math.sin(outerA) * this.size);
+            ctx.lineTo(this.x + Math.cos(innerA) * this.size * 0.4, this.y + Math.sin(innerA) * this.size * 0.4);
+          }
+          ctx.closePath(); break;
+        case "dino": {
+          const s = this.size * 0.5, dx = this.x, dy = this.y;
+          ctx.moveTo(dx-s*1.8, dy);
+          ctx.quadraticCurveTo(dx-s*1.2, dy-s*0.3, dx-s*0.5, dy-s*0.6);
+          ctx.quadraticCurveTo(dx+s*0.1, dy-s*1.1, dx+s*0.4, dy-s*1.5);
+          ctx.lineTo(dx+s*1.0, dy-s*1.5); ctx.lineTo(dx+s*1.4, dy-s*0.8);
+          ctx.lineTo(dx+s*1.4, dy-s*0.3); ctx.lineTo(dx+s*1.1, dy-s*0.3);
+          ctx.lineTo(dx+s*0.4, dy-s*0.3); ctx.lineTo(dx+s*0.5, dy);
+          ctx.lineTo(dx+s*0.8, dy+s*0.2); ctx.lineTo(dx+s*0.6, dy+s*0.2);
+          ctx.lineTo(dx+s*0.4, dy+s*0.1); ctx.lineTo(dx+s*0.45, dy+s*0.5);
+          ctx.lineTo(dx+s*0.5, dy+s*1.6); ctx.lineTo(dx+s*0.2, dy+s*1.6);
+          ctx.lineTo(dx+s*0.15, dy+s*0.5); ctx.lineTo(dx-s*0.25, dy+s*0.6);
+          ctx.lineTo(dx-s*0.3, dy+s*1.6); ctx.lineTo(dx-s*0.6, dy+s*1.6);
+          ctx.lineTo(dx-s*0.65, dy+s*0.5);
+          ctx.quadraticCurveTo(dx-s*0.9, dy+s*0.3, dx-s*1.2, dy+s*0.2);
+          ctx.quadraticCurveTo(dx-s*1.5, dy+s*0.1, dx-s*1.8, dy+s*0.05);
+          ctx.closePath(); break;
+        }
+        default:
+          ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+      }
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+// ─── Export Code Generator ───────────────────────────────────────────────────
+function generateExportCode(config) {
+  return [
+    "// ── Particle Animation ─────────────────────────────────────────",
+    "// Generated by Particle Configurator",
+    "// Usage: initParticles(canvas) then startAnimation(canvas)",
+    "",
+    "const PARTICLE_CONFIG = " + JSON.stringify(config, null, 2) + ";",
+    "",
+    "function hexToRgb(hex){const h=hex.replace('#','');return{r:parseInt(h.slice(0,2),16),g:parseInt(h.slice(2,4),16),b:parseInt(h.slice(4,6),16)};}",
+    "function hexToRgba(hex,a){const{r,g,b}=hexToRgb(hex);return 'rgba('+r+','+g+','+b+','+a+')';}",
+    "",
+    "class Particle {",
+    "  constructor(canvas,config,index=0){this.canvas=canvas;this.init(config,index);}",
+    "  init(config,index=0){",
+    "    this.x=Math.random()*this.canvas.width; this.y=Math.random()*this.canvas.height;",
+    "    const t=config.randomizeSize?Math.random():0.5;",
+    "    this.baseSize=config.minSize+t*(config.maxSize-config.minSize);",
+    "    this.size=this.baseSize; this.pulsePhase=Math.random()*Math.PI*2;",
+    "    this.resetVelocity(config); this.assignColor(config,index);",
+    "  }",
+    "  assignColor(config,index=0){",
+    "    const pal=config.palette; if(!pal||pal.length===0){this.color='#818cf8';return;}",
+    "    if(pal.length===1){this.color=pal[0];return;}",
+    "    const k=pal.length; let idx;",
+    "    if(config.colorMode==='cycle'){idx=index%k;}",
+    "    else if(config.colorMode==='weighted'){",
+    "      const w=(config.colorWeights&&config.colorWeights.length===k)?config.colorWeights:pal.map(()=>1);",
+    "      const tot=w.reduce((a,b)=>a+b,0); let r=Math.random()*tot; idx=k-1;",
+    "      for(let i=0;i<w.length;i++){r-=w[i];if(r<=0){idx=i;break;}}",
+    "    } else { idx=Math.floor(Math.random()*k); }",
+    "    this.color=pal[idx];",
+    "  }",
+    "  resetVelocity(config){",
+    "    let angle; const v=0.7;",
+    "    switch(config.direction){",
+    "      case 'up':   angle=-Math.PI/2+(Math.random()-.5)*v;break;",
+    "      case 'down': angle= Math.PI/2+(Math.random()-.5)*v;break;",
+    "      case 'left': angle= Math.PI  +(Math.random()-.5)*v;break;",
+    "      case 'right':angle=           (Math.random()-.5)*v;break;",
+    "      default:     angle=Math.random()*Math.PI*2;",
+    "    }",
+    "    const spd=config.speed*(0.5+Math.random()*0.5);",
+    "    this.vx=Math.cos(angle)*spd; this.vy=Math.sin(angle)*spd;",
+    "  }",
+    "  update(config,mouse){",
+    "    if(config.mouseInteraction!=='none'){",
+    "      const dx=this.x-mouse.x,dy=this.y-mouse.y,dist=Math.sqrt(dx*dx+dy*dy);",
+    "      if(dist<config.mouseRadius&&dist>0){",
+    "        const f=((config.mouseRadius-dist)/config.mouseRadius)*config.mouseForce;",
+    "        const d=config.mouseInteraction==='repel'?1:-1;",
+    "        this.vx+=(dx/dist)*f*d; this.vy+=(dy/dist)*f*d;",
+    "      }",
+    "    }",
+    "    const spd=Math.sqrt(this.vx*this.vx+this.vy*this.vy);",
+    "    const mx=config.speed*4,mn=config.speed*0.25;",
+    "    if(spd>mx){this.vx=this.vx/spd*mx;this.vy=this.vy/spd*mx;}",
+    "    else if(spd<mn&&spd>0){this.vx=this.vx/spd*mn;this.vy=this.vy/spd*mn;}",
+    "    this.x+=this.vx; this.y+=this.vy;",
+    "    if(config.pulse){this.pulsePhase+=config.pulseSpeed;this.size=this.baseSize*(1+Math.sin(this.pulsePhase)*config.pulseAmount);}",
+    "    else{this.size=this.baseSize;}",
+    "    if(config.bounce){",
+    "      const s=this.size;",
+    "      if(this.x<=s){this.x=s;this.vx=Math.abs(this.vx);}",
+    "      if(this.x>=this.canvas.width-s){this.x=this.canvas.width-s;this.vx=-Math.abs(this.vx);}",
+    "      if(this.y<=s){this.y=s;this.vy=Math.abs(this.vy);}",
+    "      if(this.y>=this.canvas.height-s){this.y=this.canvas.height-s;this.vy=-Math.abs(this.vy);}",
+    "    } else {",
+    "      const m=20;",
+    "      if(this.x<-m)this.x=this.canvas.width+m; if(this.x>this.canvas.width+m)this.x=-m;",
+    "      if(this.y<-m)this.y=this.canvas.height+m; if(this.y>this.canvas.height+m)this.y=-m;",
+    "    }",
+    "  }",
+    "  draw(ctx,config){",
+    "    ctx.save();",
+    "    if(config.glowEnabled){ctx.shadowColor=this.color;ctx.shadowBlur=config.glowBlur;}",
+    "    ctx.fillStyle=hexToRgba(this.color,config.opacity); ctx.beginPath();",
+    "    if(config.shape==='crescent'){",
+    "      ctx.arc(this.x,this.y,this.size,0,Math.PI*2,false);",
+    "      ctx.arc(this.x+this.size*0.45,this.y,this.size*0.82,0,Math.PI*2,false);",
+    "      ctx.fill('evenodd');",
+    "    } else {",
+    "      switch(config.shape){",
+    "        case 'square':ctx.rect(this.x-this.size,this.y-this.size,this.size*2,this.size*2);break;",
+    "        case 'egg':ctx.ellipse(this.x,this.y,this.size*0.7,this.size,0,0,Math.PI*2);break;",
+    "        case 'diamond':ctx.moveTo(this.x,this.y-this.size*1.3);ctx.lineTo(this.x+this.size,this.y);ctx.lineTo(this.x,this.y+this.size*1.3);ctx.lineTo(this.x-this.size,this.y);ctx.closePath();break;",
+    "        case 'triangle':ctx.moveTo(this.x,this.y-this.size*1.2);ctx.lineTo(this.x+this.size,this.y+this.size*.8);ctx.lineTo(this.x-this.size,this.y+this.size*.8);ctx.closePath();break;",
+    "        case 'star':for(let i=0;i<5;i++){const oa=(i*4*Math.PI/5)-Math.PI/2,ia=oa+Math.PI/5;if(i===0)ctx.moveTo(this.x+Math.cos(oa)*this.size,this.y+Math.sin(oa)*this.size);else ctx.lineTo(this.x+Math.cos(oa)*this.size,this.y+Math.sin(oa)*this.size);ctx.lineTo(this.x+Math.cos(ia)*this.size*.4,this.y+Math.sin(ia)*this.size*.4);}ctx.closePath();break;",
+    "        case 'dino':{const s=this.size*0.5,dx=this.x,dy=this.y;ctx.moveTo(dx-s*1.8,dy);ctx.quadraticCurveTo(dx-s*1.2,dy-s*0.3,dx-s*0.5,dy-s*0.6);ctx.quadraticCurveTo(dx+s*0.1,dy-s*1.1,dx+s*0.4,dy-s*1.5);ctx.lineTo(dx+s*1.0,dy-s*1.5);ctx.lineTo(dx+s*1.4,dy-s*0.8);ctx.lineTo(dx+s*1.4,dy-s*0.3);ctx.lineTo(dx+s*1.1,dy-s*0.3);ctx.lineTo(dx+s*0.4,dy-s*0.3);ctx.lineTo(dx+s*0.5,dy);ctx.lineTo(dx+s*0.8,dy+s*0.2);ctx.lineTo(dx+s*0.6,dy+s*0.2);ctx.lineTo(dx+s*0.4,dy+s*0.1);ctx.lineTo(dx+s*0.45,dy+s*0.5);ctx.lineTo(dx+s*0.5,dy+s*1.6);ctx.lineTo(dx+s*0.2,dy+s*1.6);ctx.lineTo(dx+s*0.15,dy+s*0.5);ctx.lineTo(dx-s*0.25,dy+s*0.6);ctx.lineTo(dx-s*0.3,dy+s*1.6);ctx.lineTo(dx-s*0.6,dy+s*1.6);ctx.lineTo(dx-s*0.65,dy+s*0.5);ctx.quadraticCurveTo(dx-s*0.9,dy+s*0.3,dx-s*1.2,dy+s*0.2);ctx.quadraticCurveTo(dx-s*1.5,dy+s*0.1,dx-s*1.8,dy+s*0.05);ctx.closePath();break;}",
+    "        default:ctx.arc(this.x,this.y,this.size,0,Math.PI*2);",
+    "      }",
+    "      ctx.fill();",
+    "    }",
+    "    ctx.restore();",
+    "  }",
+    "}",
+    "",
+    "let particles=[],animFrame,mouse={x:-9999,y:-9999};",
+    "",
+    "function initParticles(canvas){",
+    "  canvas.width=canvas.offsetWidth; canvas.height=canvas.offsetHeight;",
+    "  particles=Array.from({length:PARTICLE_CONFIG.count},(_,i)=>new Particle(canvas,PARTICLE_CONFIG,i));",
+    "  canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse={x:e.clientX-r.left,y:e.clientY-r.top};});",
+    "  canvas.addEventListener('mouseleave',()=>{mouse={x:-9999,y:-9999};});",
+    "  window.addEventListener('resize',()=>{canvas.width=canvas.offsetWidth;canvas.height=canvas.offsetHeight;particles=Array.from({length:PARTICLE_CONFIG.count},(_,i)=>new Particle(canvas,PARTICLE_CONFIG,i));});",
+    "}",
+    "",
+    "function startAnimation(canvas){",
+    "  const ctx=canvas.getContext('2d'); const cfg=PARTICLE_CONFIG; const rgb=hexToRgb(cfg.lineColor);",
+    "  function loop(){",
+    "    ctx.fillStyle=cfg.backgroundColor; ctx.fillRect(0,0,canvas.width,canvas.height);",
+    "    for(const p of particles){p.update(cfg,mouse);p.draw(ctx,cfg);}",
+    "    if(cfg.connectionsEnabled){",
+    "      for(let i=0;i<particles.length;i++){for(let j=i+1;j<particles.length;j++){",
+    "        const dx=particles[i].x-particles[j].x,dy=particles[i].y-particles[j].y;",
+    "        const d=Math.sqrt(dx*dx+dy*dy);",
+    "        if(d<cfg.maxDistance){",
+    "          ctx.strokeStyle='rgba('+rgb.r+','+rgb.g+','+rgb.b+','+(cfg.lineOpacity*(1-d/cfg.maxDistance))+')';",
+    "          ctx.lineWidth=cfg.lineWidth;ctx.beginPath();ctx.moveTo(particles[i].x,particles[i].y);ctx.lineTo(particles[j].x,particles[j].y);ctx.stroke();",
+    "        }",
+    "      }}",
+    "    }",
+    "    animFrame=requestAnimationFrame(loop);",
+    "  }",
+    "  loop(); return ()=>cancelAnimationFrame(animFrame);",
+    "}",
+    "",
+    "// Usage:",
+    "// const canvas = document.getElementById('hero-canvas');",
+    "// initParticles(canvas);",
+    "// startAnimation(canvas);",
+  ].join("\n");
+}
+
+// ─── UI Primitives ───────────────────────────────────────────────────────────
+function Slider({ label, value, min, max, step = 0.01, onChange, unit = "", decimals }) {
+  const dp = decimals !== undefined ? decimals : step < 0.1 ? 2 : step < 1 ? 1 : 0;
+  return (
+    <div className="mb-4">
+      <div className="flex justify-between items-center mb-1.5">
+        <label className="text-sm text-slate-300">{label}</label>
+        <span className="text-xs text-indigo-400 font-mono tabular-nums bg-slate-700 px-1.5 py-0.5 rounded">
+          {value.toFixed(dp)}{unit}
+        </span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value}
+        onChange={e => onChange(Number(e.target.value))} className="w-full cursor-pointer" />
+      <div className="flex justify-between text-xs mt-0.5" style={{ color: "#475569" }}>
+        <span>{min}{unit}</span><span>{max}{unit}</span>
+      </div>
+    </div>
+  );
+}
+
+function Toggle({ label, value, onChange, description }) {
+  return (
+    <div className="flex items-center justify-between mb-4 py-1">
+      <div className="flex-1 pr-4">
+        <div className="text-sm text-slate-300">{label}</div>
+        {description && <div className="text-xs mt-0.5 leading-relaxed" style={{ color: "#64748b" }}>{description}</div>}
+      </div>
+      <button onClick={() => onChange(!value)} style={{
+        position: "relative", flexShrink: 0, width: 44, height: 24, borderRadius: 12,
+        border: "none", cursor: "pointer", background: value ? "#6366f1" : "#475569", transition: "background 0.2s",
+      }}>
+        <div style={{
+          position: "absolute", top: 4, width: 16, height: 16, borderRadius: "50%",
+          background: "white", boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+          transform: value ? "translateX(24px)" : "translateX(4px)", transition: "transform 0.2s",
+        }} />
+      </button>
+    </div>
+  );
+}
+
+function Select({ label, value, options, onChange }) {
+  return (
+    <div className="mb-4">
+      <label className="block text-sm text-slate-300 mb-1.5">{label}</label>
+      <select value={value} onChange={e => onChange(e.target.value)} style={{
+        width: "100%", background: "#1e293b", border: "1px solid #334155",
+        color: "#e2e8f0", fontSize: 13, borderRadius: 6, padding: "7px 10px", cursor: "pointer", outline: "none",
+      }}>
+        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function ColorPicker({ label, value, onChange, description }) {
+  return (
+    <div className="mb-4">
+      <label className="block text-sm text-slate-300 mb-1.5">{label}</label>
+      {description && <p className="text-xs mb-2" style={{ color: "#64748b" }}>{description}</p>}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#1e293b", border: "1px solid #334155", borderRadius: 6, padding: "7px 10px" }}>
+        <input type="color" value={value} onChange={e => onChange(e.target.value)}
+          style={{ width: 28, height: 28, borderRadius: 4, cursor: "pointer", padding: 0 }} />
+        <span style={{ fontSize: 13, fontFamily: "monospace", color: "#cbd5e1", textTransform: "uppercase", letterSpacing: "0.05em" }}>{value}</span>
+        <div style={{ marginLeft: "auto", width: 18, height: 18, borderRadius: "50%", background: value, border: "1px solid rgba(255,255,255,0.1)" }} />
+      </div>
+    </div>
+  );
+}
+
+function SectionDivider({ title }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "4px 0 16px" }}>
+      <div style={{ height: 1, flex: 1, background: "#1e293b" }} />
+      <span style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 600 }}>{title}</span>
+      <div style={{ height: 1, flex: 1, background: "#1e293b" }} />
+    </div>
+  );
+}
+
+function SubSection({ title, children }) {
+  return (
+    <div style={{ marginBottom: 8 }}>
+      {title && <p style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 600, marginBottom: 12 }}>{title}</p>}
+      {children}
+    </div>
+  );
+}
+
+// ─── Palette Editor ──────────────────────────────────────────────────────────
+function PaletteEditor({ palette, weights, colorMode, onPalette, onWeights, onColorMode }) {
+  const totalWeight = weights.reduce((a, b) => a + b, 0);
+  const suggestions = ["#f472b6","#fb923c","#34d399","#fbbf24","#e879f9","#38bdf8","#a3e635","#f87171"];
+
+  const addColor = () => {
+    if (palette.length >= 8) return;
+    onPalette([...palette, suggestions[palette.length % suggestions.length]]);
+    onWeights([...weights, 1]);
+  };
+  const removeColor = (i) => {
+    if (palette.length <= 1) return;
+    onPalette(palette.filter((_, idx) => idx !== i));
+    onWeights(weights.filter((_, idx) => idx !== i));
+  };
+  const updateColor = (i, color) => { const p = [...palette]; p[i] = color; onPalette(p); };
+  const updateWeight = (i, w) => { const ws = [...weights]; ws[i] = w; onWeights(ws); };
+
+  return (
+    <div>
+      <Select label="Distribution Mode" value={colorMode} onChange={onColorMode}
+        options={[
+          { value: "random",   label: "⚄ Random — each particle picks independently" },
+          { value: "cycle",    label: "↻ Cycle — rotate through colors in order"     },
+          { value: "weighted", label: "⊡ Weighted — set probability per color"       },
+        ]}
+      />
+      <div style={{ marginBottom: 6 }}>
+        <div className="flex justify-between items-center mb-2">
+          <p style={{ fontSize: 10, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 600, margin: 0 }}>
+            Colors ({palette.length}/8)
+          </p>
+        </div>
+        {palette.map((color, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, background: "#1e293b", border: "1px solid #334155", borderRadius: 6, padding: "6px 10px" }}>
+            <div style={{ position: "relative", flexShrink: 0 }}>
+              <div style={{ width: 26, height: 26, borderRadius: 4, background: color, border: "2px solid rgba(255,255,255,0.12)", cursor: "pointer" }} />
+              <input type="color" value={color} onChange={e => updateColor(i, e.target.value)}
+                style={{ position: "absolute", inset: 0, opacity: 0, width: "100%", height: "100%", cursor: "pointer" }} />
+            </div>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: "#94a3b8", textTransform: "uppercase", flex: 1, letterSpacing: "0.05em" }}>{color}</span>
+            {colorMode === "weighted" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
+                <input type="range" min={1} max={100} value={weights[i]}
+                  onChange={e => updateWeight(i, Number(e.target.value))}
+                  style={{ width: 56, cursor: "pointer" }} />
+                <span style={{ fontSize: 11, color: "#6366f1", minWidth: 30, textAlign: "right" }}>
+                  {Math.round((weights[i] / totalWeight) * 100)}%
+                </span>
+              </div>
+            )}
+            {palette.length > 1 && (
+              <button onClick={() => removeColor(i)}
+                style={{ background: "none", border: "none", color: "#475569", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: "0 2px", flexShrink: 0 }}
+                onMouseEnter={e => e.target.style.color = "#f87171"}
+                onMouseLeave={e => e.target.style.color = "#475569"}>×</button>
+            )}
+          </div>
+        ))}
+        {colorMode === "weighted" && palette.length > 1 && (
+          <div style={{ display: "flex", height: 6, borderRadius: 3, overflow: "hidden", marginBottom: 10 }}>
+            {palette.map((color, i) => (
+              <div key={i} style={{ flex: weights[i], background: color, transition: "flex 0.2s" }} />
+            ))}
+          </div>
+        )}
+        {colorMode === "cycle" && palette.length > 1 && (
+          <div style={{ display: "flex", gap: 4, alignItems: "center", marginBottom: 10 }}>
+            {[...palette, ...palette.slice(0, 2)].map((color, i) => (
+              <span key={i} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <div style={{ width: 14, height: 14, borderRadius: "50%", background: color, flexShrink: 0 }} />
+                {i < palette.length + 1 && <span style={{ fontSize: 9, color: "#334155" }}>→</span>}
+              </span>
+            ))}
+            <span style={{ fontSize: 9, color: "#475569", marginLeft: 2 }}>…</span>
+          </div>
+        )}
+        {palette.length < 8 && (
+          <button onClick={addColor}
+            style={{ width: "100%", padding: "7px", fontSize: 11, background: "none", border: "1px dashed #334155", color: "#64748b", borderRadius: 5, cursor: "pointer", marginTop: 2 }}
+            onMouseEnter={e => { e.target.style.borderColor = "#6366f1"; e.target.style.color = "#818cf8"; }}
+            onMouseLeave={e => { e.target.style.borderColor = "#334155"; e.target.style.color = "#64748b"; }}>
+            + Add Color
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Tabs ────────────────────────────────────────────────────────────────────
+const TABS = [
+  { id: "particles", label: "Particles" },
+  { id: "colors",    label: "Colors"    },
+  { id: "lines",     label: "Lines"     },
+  { id: "behavior",  label: "Behavior"  },
+  { id: "effects",   label: "Effects"   },
+];
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+export default function ParticleConfigurator() {
+  const [config, setConfig]         = useState(DEFAULT_CONFIG);
+  const [activeTab, setActiveTab]   = useState("particles");
+  const [copied, setCopied]         = useState(null);
+  const [showExport, setShowExport] = useState(false);
+
+  const canvasRef    = useRef(null);
+  const animRef      = useRef(null);
+  const configRef    = useRef(config);
+  const particlesRef = useRef([]);
+  const mouseRef     = useRef({ x: -9999, y: -9999 });
+
+  useEffect(() => { configRef.current = config; }, [config]);
+  const update = useCallback((key, val) => setConfig(prev => ({ ...prev, [key]: val })), []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+
+    const spawnParticles = () => {
+      particlesRef.current = Array.from(
+        { length: configRef.current.count },
+        (_, i) => new Particle(canvas, configRef.current, i)
+      );
+    };
+    const resize = () => { canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight; spawnParticles(); };
+    resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(canvas);
+
+    const onMove  = e => { const r = canvas.getBoundingClientRect(); mouseRef.current = { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    const onLeave = () => { mouseRef.current = { x: -9999, y: -9999 }; };
+    canvas.addEventListener("mousemove", onMove);
+    canvas.addEventListener("mouseleave", onLeave);
+
+    const loop = () => {
+      const c = configRef.current, ps = particlesRef.current, rgb = hexToRgb(c.lineColor);
+      ctx.fillStyle = c.backgroundColor;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      for (const p of ps) { p.update(c, mouseRef.current); p.draw(ctx, c); }
+      if (c.connectionsEnabled) {
+        for (let i = 0; i < ps.length; i++) {
+          for (let j = i + 1; j < ps.length; j++) {
+            const dx = ps[i].x - ps[j].x, dy = ps[i].y - ps[j].y;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            if (d < c.maxDistance) {
+              ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${c.lineOpacity * (1 - d / c.maxDistance)})`;
+              ctx.lineWidth = c.lineWidth;
+              ctx.beginPath(); ctx.moveTo(ps[i].x, ps[i].y); ctx.lineTo(ps[j].x, ps[j].y); ctx.stroke();
+            }
+          }
+        }
+      }
+      animRef.current = requestAnimationFrame(loop);
+    };
+    animRef.current = requestAnimationFrame(loop);
+
+    return () => { cancelAnimationFrame(animRef.current); ro.disconnect(); canvas.removeEventListener("mousemove", onMove); canvas.removeEventListener("mouseleave", onLeave); };
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current; if (!canvas) return;
+    particlesRef.current = Array.from({ length: config.count }, (_, i) => new Particle(canvas, configRef.current, i));
+  }, [config.count]);
+
+  useEffect(() => { particlesRef.current.forEach(p => p.resetVelocity(configRef.current)); }, [config.direction]);
+
+  const paletteKey = JSON.stringify(config.palette) + config.colorMode + JSON.stringify(config.colorWeights);
+  useEffect(() => { particlesRef.current.forEach((p, i) => p.assignColor(configRef.current, i)); }, [paletteKey]);
+
+  const handleCopy = (type) => {
+    navigator.clipboard.writeText(type === "json" ? JSON.stringify(config, null, 2) : generateExportCode(config));
+    setCopied(type); setTimeout(() => setCopied(null), 2500);
+  };
+
+  return (
+    <div style={{ display: "flex", height: "100vh", overflow: "hidden", color: "#f1f5f9", fontFamily: "'Inter', system-ui, sans-serif", background: "#0d1117" }}>
+
+      <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+        <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
+        <div style={{ position: "absolute", top: 12, left: 12, display: "flex", alignItems: "center", gap: 8, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, padding: "6px 12px", fontSize: 11, color: "#94a3b8" }}>
+          <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#34d399" }} />
+          Live Preview
+        </div>
+        <div style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", display: "flex", gap: 4, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, padding: "6px 10px", alignItems: "center" }}>
+          {config.palette.map((c, i) => <div key={i} style={{ width: 10, height: 10, borderRadius: "50%", background: c }} />)}
+        </div>
+        {config.mouseInteraction !== "none" && (
+          <div style={{ position: "absolute", bottom: 12, left: 12, fontSize: 11, color: "#475569", background: "rgba(0,0,0,0.4)", padding: "4px 8px", borderRadius: 4 }}>
+            Move mouse to test {config.mouseInteraction}
+          </div>
+        )}
+        <div style={{ position: "absolute", top: 12, right: 12, fontSize: 11, color: "#64748b", fontFamily: "monospace", background: "rgba(0,0,0,0.5)", border: "1px solid rgba(255,255,255,0.08)", padding: "4px 8px", borderRadius: 4 }}>
+          {config.count} particles
+        </div>
+      </div>
+
+      <div style={{ width: 320, display: "flex", flexDirection: "column", overflow: "hidden", background: "#161b22", borderLeft: "1px solid #30363d" }}>
+        <div style={{ padding: "16px", borderBottom: "1px solid #30363d" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <h1 style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0", margin: 0, letterSpacing: "0.02em" }}>Particle Config</h1>
+              <p style={{ fontSize: 11, color: "#475569", margin: "3px 0 0" }}>Hero animation designer</p>
+            </div>
+            <button onClick={() => setConfig(DEFAULT_CONFIG)}
+              style={{ fontSize: 11, color: "#64748b", background: "none", border: "1px solid #334155", padding: "4px 10px", borderRadius: 5, cursor: "pointer" }}
+              onMouseEnter={e => { e.target.style.color = "#94a3b8"; e.target.style.borderColor = "#475569"; }}
+              onMouseLeave={e => { e.target.style.color = "#64748b"; e.target.style.borderColor = "#334155"; }}>
+              Reset
+            </button>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", borderBottom: "1px solid #30363d" }}>
+          {TABS.map(tab => (
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
+              flex: 1, padding: "10px 2px", fontSize: 11, fontWeight: 500, background: "none", border: "none", cursor: "pointer", whiteSpace: "nowrap",
+              borderBottom: activeTab === tab.id ? "2px solid #6366f1" : "2px solid transparent",
+              color: activeTab === tab.id ? "#818cf8" : "#64748b", transition: "color 0.15s",
+            }}>{tab.label}</button>
+          ))}
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
+
+          {activeTab === "particles" && (
+            <>
+              <SubSection title="Count & Size">
+                <Slider label="Particle Count" value={config.count} min={5} max={400} step={1} decimals={0} onChange={v => update("count", v)} />
+                <Toggle label="Randomize Size" value={config.randomizeSize} onChange={v => update("randomizeSize", v)} description="Vary each particle's size within min–max range" />
+                <Slider label="Min Size" value={config.minSize} min={0.5} max={1000} step={0.5} onChange={v => update("minSize", Math.min(v, config.maxSize))} />
+                <Slider label="Max Size" value={config.maxSize} min={0.5} max={1000} step={0.5} onChange={v => update("maxSize", Math.max(v, config.minSize))} />
+              </SubSection>
+              <SectionDivider title="Appearance" />
+              <SubSection title="">
+                <Slider label="Opacity" value={config.opacity} min={0.05} max={1} step={0.05} onChange={v => update("opacity", v)} />
+                <Select label="Shape" value={config.shape} onChange={v => update("shape", v)}
+                  options={[
+                    { value: "circle",   label: "● Circle"   }, { value: "square",   label: "■ Square"   },
+                    { value: "triangle", label: "▲ Triangle" }, { value: "diamond",  label: "◆ Diamond"  },
+                    { value: "star",     label: "★ Star"     }, { value: "egg",      label: "🥚 Egg"      },
+                    { value: "dino",     label: "🦕 Dinosaur" }, { value: "crescent", label: "🌙 Crescent" },
+                  ]}
+                />
+              </SubSection>
+            </>
+          )}
+
+          {activeTab === "colors" && (
+            <>
+              <SubSection title="Particle Colors">
+                <PaletteEditor palette={config.palette} weights={config.colorWeights} colorMode={config.colorMode}
+                  onPalette={v => update("palette", v)} onWeights={v => update("colorWeights", v)} onColorMode={v => update("colorMode", v)} />
+              </SubSection>
+              <SectionDivider title="Scene" />
+              <ColorPicker label="Background" value={config.backgroundColor} onChange={v => update("backgroundColor", v)} />
+              <ColorPicker label="Line Color" value={config.lineColor} onChange={v => update("lineColor", v)} description="Color of connection lines between particles" />
+            </>
+          )}
+
+          {activeTab === "lines" && (
+            <>
+              <Toggle label="Show Connection Lines" value={config.connectionsEnabled} onChange={v => update("connectionsEnabled", v)} description="Draw lines between nearby particles" />
+              {config.connectionsEnabled && (
+                <>
+                  <SectionDivider title="Line Properties" />
+                  <Slider label="Max Connect Distance" value={config.maxDistance} min={20} max={400} step={5} decimals={0} onChange={v => update("maxDistance", v)} />
+                  <Slider label="Line Opacity" value={config.lineOpacity} min={0.02} max={1} step={0.02} onChange={v => update("lineOpacity", v)} />
+                  <Slider label="Line Width" value={config.lineWidth} min={0.5} max={5} step={0.5} onChange={v => update("lineWidth", v)} />
+                </>
+              )}
+            </>
+          )}
+
+          {activeTab === "behavior" && (
+            <>
+              <SubSection title="Movement">
+                <Slider label="Speed" value={config.speed} min={0.05} max={6} step={0.05} onChange={v => update("speed", v)} />
+                <Select label="Direction" value={config.direction} onChange={v => update("direction", v)}
+                  options={[
+                    { value: "random", label: "↻ Random (all angles)" }, { value: "up",    label: "↑ Upward"    },
+                    { value: "down",   label: "↓ Downward"            }, { value: "left",  label: "← Leftward"  },
+                    { value: "right",  label: "→ Rightward"           },
+                  ]}
+                />
+                <Toggle label="Bounce off Edges" value={config.bounce} onChange={v => update("bounce", v)} description="Bounce vs. wrap around the canvas edges" />
+              </SubSection>
+              <SectionDivider title="Mouse Interaction" />
+              <SubSection title="">
+                <Select label="Mouse Interaction" value={config.mouseInteraction} onChange={v => update("mouseInteraction", v)}
+                  options={[{ value: "none", label: "⊘ None" }, { value: "repel", label: "↗ Repel" }, { value: "attract", label: "↙ Attract" }]}
+                />
+                {config.mouseInteraction !== "none" && (
+                  <>
+                    <Slider label="Mouse Radius" value={config.mouseRadius} min={30} max={400} step={10} decimals={0} onChange={v => update("mouseRadius", v)} />
+                    <Slider label="Force Strength" value={config.mouseForce} min={0.05} max={2} step={0.05} onChange={v => update("mouseForce", v)} />
+                  </>
+                )}
+              </SubSection>
+            </>
+          )}
+
+          {activeTab === "effects" && (
+            <>
+              <SubSection title="Pulse">
+                <Toggle label="Pulse Effect" value={config.pulse} onChange={v => update("pulse", v)} description="Animate particle size in and out rhythmically" />
+                {config.pulse && (
+                  <>
+                    <Slider label="Pulse Speed" value={config.pulseSpeed} min={0.002} max={0.15} step={0.002} onChange={v => update("pulseSpeed", v)} />
+                    <Slider label="Pulse Amount" value={config.pulseAmount} min={0.05} max={1} step={0.05} onChange={v => update("pulseAmount", v)} />
+                  </>
+                )}
+              </SubSection>
+              <SectionDivider title="Glow" />
+              <SubSection title="">
+                <Toggle label="Glow Effect" value={config.glowEnabled} onChange={v => update("glowEnabled", v)} description="Soft glow around each particle (GPU intensive)" />
+                {config.glowEnabled && (
+                  <>
+                    <Slider label="Glow Blur" value={config.glowBlur} min={2} max={40} step={1} decimals={0} onChange={v => update("glowBlur", v)} />
+                    <Slider label="Glow Intensity" value={config.glowIntensity} min={0.1} max={1} step={0.05} onChange={v => update("glowIntensity", v)} />
+                  </>
+                )}
+              </SubSection>
+            </>
+          )}
+        </div>
+
+        <div style={{ padding: "12px 16px", borderTop: "1px solid #30363d" }}>
+          <button onClick={() => setShowExport(p => !p)} style={{
+            width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+            background: "none", border: "none", cursor: "pointer", padding: "4px 0",
+            fontSize: 10, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 600,
+          }}>
+            <span>Export</span><span>{showExport ? "▲" : "▼"}</span>
+          </button>
+          {showExport && (
+            <div style={{ marginTop: 10 }}>
+              <p style={{ fontSize: 11, color: "#475569", lineHeight: 1.6, marginBottom: 10 }}>
+                Copy config JSON or a complete vanilla JS implementation ready to paste into your hero section.
+              </p>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => handleCopy("json")} style={{
+                  flex: 1, padding: "8px", fontSize: 11, fontWeight: 500, background: "none",
+                  border: "1px solid", borderColor: copied === "json" ? "#34d399" : "#334155",
+                  color: copied === "json" ? "#34d399" : "#94a3b8", borderRadius: 6, cursor: "pointer",
+                }}>{copied === "json" ? "✓ Copied!" : "Copy JSON"}</button>
+                <button onClick={() => handleCopy("code")} style={{
+                  flex: 1, padding: "8px", fontSize: 11, fontWeight: 500,
+                  background: copied === "code" ? "#059669" : "#4f46e5",
+                  border: "none", color: "white", borderRadius: 6, cursor: "pointer",
+                }}>{copied === "code" ? "✓ Copied!" : "Copy Code"}</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

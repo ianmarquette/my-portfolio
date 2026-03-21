@@ -7,10 +7,10 @@
 
 ### Home Page
 
-- [ ] **HOME-01**: User sees a hero section with designer's name, role, and short tagline
-- [ ] **HOME-02**: User sees a visual grid or list of all case studies with cover image and title
-- [ ] **HOME-03**: User sees a brief about blurb on the home page
-- [ ] **HOME-04**: User can find a contact link (email) on the home page
+- [x] **HOME-01**: User sees a hero section with designer's name, role, and short tagline
+- [x] **HOME-02**: User sees a visual grid or list of all case studies with cover image and title
+- [x] **HOME-03**: User sees a brief about blurb on the home page
+- [x] **HOME-04**: User can find a contact link (email) on the home page
 
 ### Case Studies
 
@@ -49,10 +49,10 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| HOME-01 | Phase 1 | Pending |
-| HOME-02 | Phase 1 | Pending |
-| HOME-03 | Phase 1 | Pending |
-| HOME-04 | Phase 1 | Pending |
+| HOME-01 | Phase 1 | Complete |
+| HOME-02 | Phase 1 | Complete |
+| HOME-03 | Phase 1 | Complete |
+| HOME-04 | Phase 1 | Complete |
 | CASE-06 | Phase 1 | Complete |
 | CASE-01 | Phase 2 | Pending |
 | CASE-02 | Phase 2 | Pending |
